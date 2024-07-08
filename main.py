@@ -15,6 +15,8 @@ from pydub import AudioSegment # Nécessite d'installer FFMPeg + path. A Voir po
 import simpleaudio as sa  
 import tempfile
 
+from websocket_client import WebSocketClient
+
 
 default_unlockpass = "aa"
 
@@ -109,9 +111,11 @@ class MainWindow(QMainWindow):
         self.is_playing = False        
 
         self.load_preferences()
-        self.sse_client = SSEClient()
-        self.sse_client.play_sound.connect(self.play_sound)
-        self.sse_client.start()
+        #self.sse_client = SSEClient()
+        #self.sse_client.play_sound.connect(self.play_sound)
+        #self.sse_client.start()
+        self.start_socket_io_client(self.web_url)
+
 
         self.web_view = QWebEngineView()
         url = self.web_url + "/display"
@@ -161,8 +165,7 @@ class MainWindow(QMainWindow):
         data = self.audio_queue.pop(0)
         self.play_sound(data)
 
-    def play_sound(self, data):
-        sound_url = data["audio_url"]
+    def play_sound(self, sound_url):
         print(sound_url)
         # Télécharger le fichier MP3 depuis l'URL
         response = requests.get(sound_url)
@@ -179,6 +182,14 @@ class MainWindow(QMainWindow):
         self.play_obj.wait_done()  # Attendre la fin de la lecture
         self.is_playing = False
         self.play_next_sound()
+        
+    def start_socket_io_client(self, url):
+        print(f"Starting Socket.IO client with URL: {url}")
+        self.socket_io_client = WebSocketClient(url)
+        self.socket_io_client.signal_sound.connect(self.play_sound)
+        #self.socket_io_client.new_notification.connect(self.show_notification)
+        #self.socket_io_client.my_patient.connect(self.update_my_patient)
+        self.socket_io_client.start() 
 
     def load_preferences(self):
         settings = QSettings()
