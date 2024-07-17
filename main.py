@@ -70,6 +70,13 @@ class PreferencesDialog(QDialog):
 
         self.web_url_input = QLineEdit(self)
         form_layout.addRow("URL de la page web:", self.web_url_input)
+        
+        self.username_input = QLineEdit(self)
+        form_layout.addRow("Nom d'utilisateur:", self.username_input)
+
+        self.password_input = QLineEdit(self)
+        self.password_input.setEchoMode(QLineEdit.Password)
+        form_layout.addRow("Mot de passe:", self.password_input)
 
         self.save_button = QPushButton("Enregistrer", self)
         self.save_button.clicked.connect(self.save_preferences)
@@ -83,11 +90,15 @@ class PreferencesDialog(QDialog):
         settings = QSettings()
         self.web_url_input.setText(settings.value("web_url", "http://localhost:5000"))
         self.secret_input.setText(settings.value("unlockpass", default_unlockpass))
+        self.username_input.setText(settings.value("username", ""))
+        self.password_input.setText(settings.value("password", ""))
 
     def save_preferences(self):
         settings = QSettings()
         url = self.web_url_input.text()
         secret = self.secret_input.text()
+        username = self.username_input.text()
+        password = self.password_input.text()
 
         if not url:
             QMessageBox.warning(self, "Erreur", "L'URL ne peut pas être vide")
@@ -95,9 +106,14 @@ class PreferencesDialog(QDialog):
         if not secret:
             QMessageBox.warning(self, "Erreur", "Le mot de passe ne peut pas être vide")
             return
+        if not username or not password:
+            QMessageBox.warning(self, "Erreur", "Le nom d'utilisateur et le mot de passe ne peuvent pas être vides")
+            return
         
         settings.setValue("web_url", url)
         settings.setValue("unlockpass", secret)
+        settings.setValue("username", username)
+        settings.setValue("password", password)
         self.accept()
 
     def get_secret_sequence(self):
@@ -121,6 +137,9 @@ class MainWindow(QMainWindow):
         url = self.web_url + "/display"
         self.web_view.setUrl(url)
         self.setCentralWidget(self.web_view)
+        
+        # Connect to the URL changed signal. On recherche la page login pour la remplir
+        self.web_view.urlChanged.connect(self.on_url_changed)
 
         # Fullscreen mode
         self.showFullScreen()
@@ -189,12 +208,64 @@ class MainWindow(QMainWindow):
         self.socket_io_client.signal_sound.connect(self.play_sound)
         #self.socket_io_client.new_notification.connect(self.show_notification)
         #self.socket_io_client.my_patient.connect(self.update_my_patient)
-        self.socket_io_client.start() 
+        self.socket_io_client.start()
+        
+        
+    def on_url_changed(self, url):
+        # Check if 'login' appears in the URL
+        if "login" in url.toString():
+            self.inject_login_script()            
+
+    def inject_login_script(self):
+        print("Injection de code JS")
+        print(self.username, self.password)
+        # Inject JavaScript to fill and submit the login form automatically
+        script = f"""
+    document.addEventListener('DOMContentLoaded', function() {{
+        console.log("Injecting login script after DOM is fully loaded");
+        var usernameInput = document.querySelector('input[name="username"]');
+        var passwordInput = document.querySelector('input[name="password"]');
+        var rememberCheckbox = document.querySelector('input[name="remember"]');
+        
+        if (usernameInput) {{
+            console.log("Found username input");
+            usernameInput.value = "{self.username}";
+        }} else {{
+            console.log("Username input not found");
+        }}
+
+        if (passwordInput) {{
+            console.log("Found password input");
+            passwordInput.value = "{self.password}";
+        }} else {{
+            console.log("Password input not found");
+        }}
+
+        if (rememberCheckbox) {{
+            console.log("Found remember me checkbox");
+            rememberCheckbox.checked = true;
+        }} else {{
+            console.log("Remember me checkbox not found");
+        }}
+
+        var form = usernameInput ? usernameInput.closest('form') : null;
+        if (form) {{
+            console.log("Found form, submitting");
+            form.submit();
+        }} else {{
+            console.log("Form not found");
+        }}
+    }});
+    """
+        self.web_view.page().runJavaScript(script)
+        
 
     def load_preferences(self):
         settings = QSettings()
         self.web_url = settings.value("web_url", "http://localhost:5000")
         self.unlockpass = settings.value("unlockpass", default_unlockpass)
+        self.username = settings.value("username", "")
+        self.password = settings.value("password", "")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
