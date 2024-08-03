@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QVBoxLayout, QW
                                 QLineEdit, QPushButton, QDialog, QLabel, QFormLayout, 
                                 QMenuBar, QMessageBox, QCheckBox)
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtCore import Qt, QSettings, QThread, Signal, QUrl, Slot
+from PySide6.QtCore import Qt, QSettings, QThread, Signal, QUrl, Slot, QMutex, QWaitCondition
 from PySide6.QtGui import QAction
 from PySide6.QtMultimedia import QMediaPlayer
 from requests.exceptions import RequestException
@@ -14,6 +14,7 @@ import os
 from pydub import AudioSegment # Nécessite d'installer FFMPeg + path. A Voir pour linux
 import simpleaudio as sa  
 import tempfile
+import threading
 
 from websocket_client import WebSocketClient
 
@@ -53,6 +54,50 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
+
+class SoundPlayer(QThread):
+    finished = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.mutex = QMutex()
+        self.condition = QWaitCondition()
+        self.queue = []
+        self.running = True
+
+    def run(self):
+        while self.running:
+            self.mutex.lock()
+            if not self.queue:
+                self.condition.wait(self.mutex)
+            if not self.running:
+                self.mutex.unlock()
+                return
+            sound = self.queue.pop(0)
+            self.mutex.unlock()
+
+            if sound:
+                play_obj = sa.play_buffer(
+                    sound.raw_data, 
+                    num_channels=sound.channels, 
+                    bytes_per_sample=sound.sample_width, 
+                    sample_rate=sound.frame_rate
+                )
+                play_obj.wait_done()
+                self.finished.emit()
+
+    def add_sound(self, sound):
+        self.mutex.lock()
+        self.queue.append(sound)
+        self.mutex.unlock()
+        self.condition.wakeOne()
+
+    def stop(self):
+        self.mutex.lock()
+        self.running = False
+        self.mutex.unlock()
+        self.condition.wakeOne()
+        
 
 class PreferencesDialog(QDialog):
     def __init__(self, parent=None):
@@ -141,8 +186,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.audio_queue = []
-        self.is_playing = False        
+        self.sound_player = SoundPlayer()
+        self.sound_player.start()    
 
         self.load_preferences()
         #self.sse_client = SSEClient()
@@ -204,21 +249,26 @@ class MainWindow(QMainWindow):
 
     def play_sound(self, sound_url):
         print(sound_url)
-        # Télécharger le fichier MP3 depuis l'URL
-        response = requests.get(sound_url)
-        response.raise_for_status()
+        threading.Thread(target=self._download_and_queue_sound, args=(sound_url,)).start()
 
-        # Stocker le fichier MP3 temporairement
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_mp3:
-            temp_mp3.write(response.content)
-            temp_mp3_path = temp_mp3.name
+    def _download_and_queue_sound(self, sound_url):
+        try:
+            response = requests.get(sound_url)
+            response.raise_for_status()
 
-        # Lire le fichier MP3 temporaire
-        self.sound = AudioSegment.from_mp3(temp_mp3_path)
-        self.play_obj = sa.play_buffer(self.sound.raw_data, num_channels=self.sound.channels, bytes_per_sample=self.sound.sample_width, sample_rate=self.sound.frame_rate)
-        self.play_obj.wait_done()  # Attendre la fin de la lecture
-        self.is_playing = False
-        self.play_next_sound()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_mp3:
+                temp_mp3.write(response.content)
+                temp_mp3_path = temp_mp3.name
+
+            sound = AudioSegment.from_mp3(temp_mp3_path)
+            self.sound_player.add_sound(sound)
+        except Exception as e:
+            print(f"Erreur lors du téléchargement du son : {e}")
+
+    def closeEvent(self, event):
+        self.sound_player.stop()
+        self.sound_player.wait()
+        super().closeEvent(event)
         
     def start_socket_io_client(self, url):
         print(f"Starting Socket.IO client with URL: {url}")
@@ -331,6 +381,7 @@ class MainWindow(QMainWindow):
     def enter_fullscreen(self):
         self.menu_bar.hide()
         self.showFullScreen()
+
 
 if __name__ == "__main__":
     app = QApplication([])
