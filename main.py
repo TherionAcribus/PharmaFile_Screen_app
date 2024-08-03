@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QApplication, QMainWindow, QMenu, QVBoxLayout, QWidget, 
                                 QLineEdit, QPushButton, QDialog, QLabel, QFormLayout, 
-                                QMenuBar, QMessageBox, QHBoxLayout)
+                                QMenuBar, QMessageBox, QCheckBox)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtCore import Qt, QSettings, QThread, Signal, QUrl, Slot
 from PySide6.QtGui import QAction
@@ -16,9 +16,6 @@ import simpleaudio as sa
 import tempfile
 
 from websocket_client import WebSocketClient
-
-
-default_unlockpass = "aa"
 
 
 class SSEClient(QThread):
@@ -64,13 +61,19 @@ class PreferencesDialog(QDialog):
 
         self.main_layout = QVBoxLayout(self)
 
-        self.secret_input = QLineEdit(self)
         form_layout = QFormLayout()
-        form_layout.addRow("Mot pour débloquer le plein écran:", self.secret_input)
+
+        self.use_password_checkbox = QCheckBox("Utiliser un mot de passe pour debloquer le plein écran", self)
+        self.use_password_checkbox.stateChanged.connect(self.toggle_password_field)
+        form_layout.addRow(self.use_password_checkbox)
+
+        self.secret_input = QLineEdit(self)
+        self.secret_label = QLabel("Mot pour débloquer le plein écran:")
+        form_layout.addRow(self.secret_label, self.secret_input)
 
         self.web_url_input = QLineEdit(self)
         form_layout.addRow("URL de la page web:", self.web_url_input)
-        
+
         self.username_input = QLineEdit(self)
         form_layout.addRow("Nom d'utilisateur:", self.username_input)
 
@@ -85,17 +88,27 @@ class PreferencesDialog(QDialog):
         self.main_layout.addWidget(self.save_button)
 
         self.setLayout(self.main_layout)
+
+    def toggle_password_field(self, state):
+        # 2 = Checked
+        self.secret_input.setEnabled(state == 2)
+        self.secret_label.setEnabled(state == 2)
     
     def load_preferences(self):
         settings = QSettings()
+        use_password = settings.value("use_password", False, type=bool)
+        self.use_password_checkbox.setChecked(use_password)
+        self.secret_input.setText(settings.value("unlockpass", ""))
+        self.secret_input.setEnabled(use_password)
+        self.secret_label.setEnabled(use_password)
         self.web_url_input.setText(settings.value("web_url", "http://localhost:5000"))
-        self.secret_input.setText(settings.value("unlockpass", default_unlockpass))
-        self.username_input.setText(settings.value("username", ""))
-        self.password_input.setText(settings.value("password", ""))
+        self.username_input.setText(settings.value("username", "admin"))
+        self.password_input.setText(settings.value("password", "admin"))
 
     def save_preferences(self):
         settings = QSettings()
         url = self.web_url_input.text()
+        use_password = self.use_password_checkbox.isChecked()
         secret = self.secret_input.text()
         username = self.username_input.text()
         password = self.password_input.text()
@@ -111,10 +124,15 @@ class PreferencesDialog(QDialog):
             return
         
         settings.setValue("web_url", url)
+        settings.setValue("use_password", use_password)
         settings.setValue("unlockpass", secret)
         settings.setValue("username", username)
         settings.setValue("password", password)
+        
         self.accept()
+        
+        # rechargement des préférences pour être appliquées immédiatement
+        self.parent().load_preferences()
 
     def get_secret_sequence(self):
         return self.secret_input.text()
@@ -162,7 +180,7 @@ class MainWindow(QMainWindow):
         self.preferences_action.triggered.connect(self.open_preferences)
         self.config_menu.addAction(self.preferences_action)
 
-        self.fullscreen_action = QAction("Plein Écran", self)
+        self.fullscreen_action = QAction("Plein Écran (F11)", self)
         self.fullscreen_action.triggered.connect(self.enter_fullscreen)
         self.config_menu.addAction(self.fullscreen_action)
         
@@ -221,7 +239,7 @@ class MainWindow(QMainWindow):
         print(self.username, self.password)
         # Inject JavaScript to fill and submit the login form automatically
         script = f"""
-    document.addEventListener('DOMContentLoaded', function() {{
+        document.addEventListener('DOMContentLoaded', function() {{
         console.log("Injecting login script after DOM is fully loaded");
         var usernameInput = document.querySelector('input[name="username"]');
         var passwordInput = document.querySelector('input[name="password"]');
@@ -263,20 +281,41 @@ class MainWindow(QMainWindow):
     def load_preferences(self):
         settings = QSettings()
         self.web_url = settings.value("web_url", "http://localhost:5000")
-        self.unlockpass = settings.value("unlockpass", default_unlockpass)
-        self.username = settings.value("username", "")
-        self.password = settings.value("password", "")
+        self.use_password = settings.value("use_password", False, type=bool)
+        self.unlockpass = settings.value("unlockpass", "")
+        self.username = settings.value("username", "admin")
+        self.password = settings.value("password", "admin")
 
     def keyPressEvent(self, event):
+        """ capture des touches du clavier pour réduire l'App """
         if event.key() == Qt.Key_Escape:
-            event.ignore()  # Ignore the escape key to prevent exit from fullscreen
-        
-        # Capture keystrokes for unlocking configuration
-        self.typed_sequence += event.text()
-        if self.unlockpass in self.typed_sequence:
-            self.typed_sequence = ""  # Reset sequence after successful match
-            self.showNormal()  # Exit fullscreen mode to show menu bar
-            self.menu_bar.show()
+            event.ignore()  # Ignore la touche Escape pour empêcher la sortie du plein écran
+
+        if self.use_password:
+            # Full screen avec F11 (mais pas pour réduire)
+            if event.key() == Qt.Key_F11:
+                if self.isFullScreen():
+                    QMessageBox.information(self, "Mode plein écran", 
+                                            "La saisie du mot de passe est obligatoire pour quitter le mode plein écran.")
+                else:
+                    self.showFullScreen()
+                    self.menu_bar.hide() 
+                
+            # Capture des frappes pour déverrouiller la configuration si use_password est True
+            self.typed_sequence += event.text()
+            if self.unlockpass in self.typed_sequence:
+                self.typed_sequence = ""  # Réinitialise la séquence après une correspondance réussie
+                self.showNormal()  # Quitte le mode plein écran pour afficher la barre de menu
+                self.menu_bar.show()
+        else:
+            # Utilise F11 pour basculer entre le mode plein écran et normal si use_password est False
+            if event.key() == Qt.Key_F11:
+                if self.isFullScreen():
+                    self.showNormal()
+                    self.menu_bar.show()
+                else:
+                    self.showFullScreen()
+                    self.menu_bar.hide()
         
         super().keyPressEvent(event)
     
